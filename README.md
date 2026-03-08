@@ -1,4 +1,4 @@
-# Portfolio Tracker v3.0
+# Portfolio Analyzer v3.0
 
 Modular stock portfolio tracker with pluggable strategy architecture.
 Built for Weinstein Stage Analysis but extensible to any technical strategy.
