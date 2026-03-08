@@ -110,3 +110,25 @@ def rate_of_change(df: pd.DataFrame, period: int, col: str = "Close") -> float |
     if previous == 0:
         return None
     return ((current - previous) / previous) * 100
+
+
+def volume_ratio(df: pd.DataFrame, lookback: int = 5, avg_period: int = 50) -> float | None:
+    """Ratio of recent average volume to longer-term average volume.
+    > 1.5 suggests unusual accumulation, > 2.0 suggests breakout-level volume."""
+    if len(df) < avg_period:
+        return None
+    recent_avg = df['Volume'].iloc[-lookback:].mean()
+    long_avg = df['Volume'].iloc[-avg_period:].mean()
+    if long_avg == 0:
+        return None
+    return float(recent_avg / long_avg)
+
+
+def near_high(df: pd.DataFrame, lookback: int = 252) -> dict:
+    """How close is the price to its N-day high? Useful for breakout detection."""
+    if len(df) < lookback:
+        lookback = len(df)
+    period_high = df['High'].iloc[-lookback:].max()
+    price = df['Close'].iloc[-1]
+    pct_from_high = ((price - period_high) / period_high) * 100
+    return {"high": float(period_high), "pct_from_high": float(pct_from_high)}

@@ -40,7 +40,6 @@ class RelativeStrengthStrategy(Strategy):
         rs_12m = self._rs_score(df, self._bench_df, 252)
 
         # Composite: weighted average
-        scores = [s for s in [rs_1m, rs_3m, rs_6m, rs_12m] if s is not None]
         weights = [0.15, 0.25, 0.30, 0.30]
         valid = [(s, w) for s, w in zip([rs_1m, rs_3m, rs_6m, rs_12m], weights) if s is not None]
         if valid:
@@ -49,20 +48,48 @@ class RelativeStrengthStrategy(Strategy):
         else:
             composite = None
 
+        # RS improving = short-term RS stronger than long-term RS (acceleration)
+        rs_improving = (rs_1m is not None and rs_6m is not None and rs_1m > rs_6m)
+
+        has_position = position is not None
+
         if composite is None:
             action, severity = "—", "gray"
             label = "N/A"
+        elif composite >= 120:
+            if has_position:
+                action, severity = "🟢 HOLD", "green"
+            else:
+                action, severity = "🟢 BUY", "green"
+            label = f"RS {composite:.0f}"
         elif composite >= 110:
-            action, severity = "🟢 LEADER", "green"
+            if has_position:
+                action, severity = "🟢 HOLD", "green"
+            elif rs_improving:
+                action, severity = "⚪ WATCH", "blue"
+            else:
+                action, severity = "🟢 LEADER", "green"
             label = f"RS {composite:.0f}"
         elif composite >= 90:
-            action, severity = "🟡 NEUTRAL", "yellow"
+            if has_position and composite < 95:
+                action, severity = "🟡 CAUTION", "yellow"
+            elif has_position:
+                action, severity = "🟡 NEUTRAL", "yellow"
+            elif rs_improving:
+                action, severity = "⚪ WATCH", "blue"
+            else:
+                action, severity = "🟡 NEUTRAL", "yellow"
             label = f"RS {composite:.0f}"
         else:
-            action, severity = "🔴 LAGGARD", "red"
+            if has_position:
+                action, severity = "🔴 LAGGARD", "red"
+            else:
+                action, severity = "🔴 LAGGARD", "red"
             label = f"RS {composite:.0f}"
 
         detail = f"{'Outperforming' if (composite or 0) >= 100 else 'Underperforming'} {self._benchmark}"
+        if rs_improving:
+            detail += " (RS accelerating)"
 
         return Signal(
             ticker=ticker,
@@ -76,12 +103,16 @@ class RelativeStrengthStrategy(Strategy):
                 "rs_6m": rs_6m,
                 "rs_12m": rs_12m,
                 "rs_composite": composite,
+                "rs_improving": rs_improving,
             },
         )
 
     def scan_watchlist(self, ticker: str, df: pd.DataFrame) -> Signal | None:
         signal = self.analyze(ticker, df)
-        if signal.metrics.get("rs_composite") and signal.metrics["rs_composite"] >= 100:
+        if "BUY" in signal.action or "WATCH" in signal.action:
+            return signal
+        comp = signal.metrics.get("rs_composite")
+        if comp and comp >= 105:
             return signal
         return None
 

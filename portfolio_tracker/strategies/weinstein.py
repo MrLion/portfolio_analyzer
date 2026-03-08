@@ -10,6 +10,14 @@ class WeinsteinStrategy(Strategy):
     Weinstein Stage Analysis.
     Classifies stocks into Stages 1-4 based on price vs 30-week SMA,
     MA alignment, and 30-week SMA slope.
+
+    Actions:
+        🟢 BUY        — Stage 2 breakout: above rising 30w, MAs aligned, volume confirms
+        🟢 HOLD       — In position, Stage 2A intact
+        ⚪ WATCH      — Setting up but not ready (Stage 1→2, or 2A without volume)
+        🟡 CAUTION    — Stage 2B, trend weakening
+        🟠 TIGHT STOP — Stage 2C, below 30w but 30w still rising
+        🔴 SELL       — Stage 3→4 or 4, below falling 30w
     """
 
     @property
@@ -25,9 +33,12 @@ class WeinsteinStrategy(Strategy):
         price = float(df['Close'].iloc[-1])
         mas = self._compute_mas(df)
         stage, note = self._determine_stage(price, mas)
-        action = self._stage_to_action(stage)
-        severity = self._action_to_severity(action)
         stack = ind.ma_stack(df, price, [10, 21, 50, 200])
+        vol_ratio = ind.volume_ratio(df, lookback=5, avg_period=50)
+        high_info = ind.near_high(df, lookback=252)
+
+        has_position = position is not None
+        action, severity = self._determine_action(stage, has_position, mas, stack, vol_ratio)
 
         return Signal(
             ticker=ticker,
@@ -46,21 +57,35 @@ class WeinsteinStrategy(Strategy):
                 "dist_50d": ind.pct_distance(price, mas.get("50d")),
                 "dist_30w": ind.pct_distance(price, mas.get("30w")),
                 "ma_aligned": stack["aligned"],
+                "vol_ratio": vol_ratio,
+                "pct_from_52w_high": high_info["pct_from_high"],
             },
         )
 
     def scan_watchlist(self, ticker: str, df: pd.DataFrame) -> Signal | None:
         signal = self.analyze(ticker, df)
-        if "2" in signal.label:
+        if "BUY" in signal.action or "WATCH" in signal.action:
             return signal
+        if "2A" in signal.label:
+            return Signal(
+                ticker=signal.ticker, action="⚪ WATCH", severity="blue",
+                label=signal.label, detail=signal.detail, metrics=signal.metrics,
+            )
         return None
 
     def columns(self) -> list[str]:
         return ["Price", "50d SMA", "Dist 50d", "30w SMA",
-                "Dist 30w", "30w Slope", "Stage", "MA Order", "Action"]
+                "Dist 30w", "30w↕", "Stage", "MAs", "Vol", "Action"]
 
     def row(self, signal: Signal) -> list[str]:
         m = signal.metrics
+        vol = m.get('vol_ratio')
+        vol_str = f"{vol:.1f}x" if vol is not None else "N/A"
+        if vol and vol >= 2.0:
+            vol_str += " 🔥"
+        elif vol and vol >= 1.5:
+            vol_str += " ⬆"
+
         return [
             f"${m['price']:.2f}",
             f"${m['sma_50d']:.2f}" if m.get('sma_50d') else "N/A",
@@ -70,6 +95,7 @@ class WeinsteinStrategy(Strategy):
             "↑" if m.get('sma_30w_rising') else ("↓" if m.get('sma_30w_rising') is False else "?"),
             signal.label,
             "✅" if m.get('ma_aligned') else "❌",
+            vol_str,
             signal.action,
         ]
 
@@ -79,7 +105,7 @@ class WeinsteinStrategy(Strategy):
         mas = {}
         for label, period in [("10d", 10), ("21d", 21), ("50d", 50), ("200d", 200)]:
             mas[label] = ind.sma_latest(df, period)
-        mas["30w"] = ind.sma_latest(df, 150)  # 30 weeks ≈ 150 trading days
+        mas["30w"] = ind.sma_latest(df, 150)
 
         sma_series = ind.sma(df, 150)
         mas["30w_rising"] = ind.slope_is_rising(sma_series, lookback=20)
@@ -113,24 +139,52 @@ class WeinsteinStrategy(Strategy):
             else:
                 return "3→4 ⚠️", f"Breaking down — {pct_below:.1f}% below 30w SMA"
 
-    def _stage_to_action(self, stage: str) -> str:
-        if "4" in stage or "3→4" in stage:
-            return "🔴 SELL"
-        if "2C" in stage:
-            return "🟠 TIGHT STOP"
-        if "2B" in stage:
-            return "🟡 CAUTION"
-        if "2A" in stage:
-            return "🟢 HOLD"
-        return "—"
+    def _determine_action(self, stage: str, has_position: bool,
+                          mas: dict, stack: dict, vol_ratio: float | None) -> tuple[str, str]:
+        """
+        BUY criteria (not in position):
+          - Stage 2A + MAs aligned + 30w rising + volume ratio >= 1.5
 
-    def _action_to_severity(self, action: str) -> str:
-        if "SELL" in action:
-            return "red"
-        if "TIGHT" in action:
-            return "orange"
-        if "CAUTION" in action:
-            return "yellow"
-        if "HOLD" in action:
-            return "green"
-        return "gray"
+        WATCH criteria:
+          - Stage 1→2 (basing, potential breakout coming)
+          - Stage 2A but volume not confirming yet
+          - Stage 2B pullback near support (potential re-entry)
+
+        HOLD/CAUTION/SELL for existing positions based on stage.
+        """
+        # ── SELL ──
+        if "4" in stage or "3→4" in stage:
+            return "🔴 SELL", "red"
+
+        # ── TIGHT STOP ──
+        if "2C" in stage:
+            return "🟠 TIGHT STOP", "orange"
+
+        # ── Stage 1→2: always WATCH ──
+        if "1→2" in stage:
+            return "⚪ WATCH", "blue"
+
+        # ── Stage 2B ──
+        if "2B" in stage:
+            if has_position:
+                return "🟡 CAUTION", "yellow"
+            # Not in position — watch for bounce off support
+            if mas.get("30w_rising"):
+                return "⚪ WATCH", "blue"
+            return "🟡 CAUTION", "yellow"
+
+        # ── Stage 2A — the money zone ──
+        if "2A" in stage:
+            if has_position:
+                return "🟢 HOLD", "green"
+            # Not in position — check BUY conditions
+            aligned = stack.get("aligned", False)
+            rising = mas.get("30w_rising", False)
+            strong_vol = vol_ratio is not None and vol_ratio >= 1.5
+            if aligned and rising and strong_vol:
+                return "🟢 BUY", "green"
+            if aligned and rising:
+                return "⚪ WATCH", "blue"
+            return "⚪ WATCH", "blue"
+
+        return "—", "gray"

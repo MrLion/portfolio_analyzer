@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core import indicators as ind
 from strategies.weinstein import WeinsteinStrategy
 from strategies.momentum import MomentumStrategy
+from core.portfolio import Position
 
 
 def _make_df(prices: list[float]) -> pd.DataFrame:
@@ -92,14 +93,65 @@ def test_slope_is_rising():
 
 
 def test_weinstein_stage2a():
-    """Rising prices well above all MAs → Stage 2A."""
+    """Rising prices well above all MAs → Stage 2A. No position = WATCH or BUY."""
     prices = list(range(50, 260))
     df = _make_df(prices)
     strategy = WeinsteinStrategy()
     signal = strategy.analyze("TEST", df)
     assert "2A" in signal.label, f"Expected Stage 2A, got {signal.label}"
-    assert "HOLD" in signal.action
-    print(f"  ✅ test_weinstein_stage2a passed ({signal.label})")
+    # No position passed → should be WATCH or BUY (not HOLD)
+    assert "WATCH" in signal.action or "BUY" in signal.action, \
+        f"Expected WATCH or BUY for no-position 2A, got {signal.action}"
+    print(f"  ✅ test_weinstein_stage2a passed ({signal.label} → {signal.action})")
+
+
+def test_weinstein_stage2a_hold():
+    """Rising prices, WITH position → HOLD."""
+    prices = list(range(50, 260))
+    df = _make_df(prices)
+    strategy = WeinsteinStrategy()
+    fake_pos = Position(
+        ticker="TEST", theme="Test", entry_price=100, current_price=259,
+        shares=10, invested=1000, current_value=2590, pnl_dollars=1590,
+        pnl_pct=159.0, weight=25.0,
+    )
+    signal = strategy.analyze("TEST", df, position=fake_pos)
+    assert "2A" in signal.label, f"Expected Stage 2A, got {signal.label}"
+    assert "HOLD" in signal.action, f"Expected HOLD for position in 2A, got {signal.action}"
+    print(f"  ✅ test_weinstein_stage2a_hold passed ({signal.label} → {signal.action})")
+
+
+def test_weinstein_no_position_not_hold():
+    """Without a position, Stage 2A should never return HOLD — should be WATCH or BUY."""
+    prices = list(range(50, 260))
+    df = _make_df(prices)
+    strategy = WeinsteinStrategy()
+    signal = strategy.analyze("TEST_NO_POS", df, position=None)
+    assert "HOLD" not in signal.action, \
+        f"HOLD should only appear for existing positions, got {signal.action}"
+    assert "WATCH" in signal.action or "BUY" in signal.action, \
+        f"Expected WATCH or BUY for no-position, got {signal.action}"
+    print(f"  ✅ test_weinstein_no_position_not_hold passed ({signal.action})")
+
+
+def test_weinstein_watchlist_scan():
+    """Watchlist scan should return BUY/WATCH for 2A stocks, None for Stage 4."""
+    # Stage 2A stock
+    prices_up = list(range(50, 260))
+    df_up = _make_df(prices_up)
+    strategy = WeinsteinStrategy()
+    sig = strategy.scan_watchlist("WINNER", df_up)
+    assert sig is not None, "Expected watchlist signal for Stage 2A stock"
+    assert "WATCH" in sig.action or "BUY" in sig.action, \
+        f"Expected WATCH/BUY, got {sig.action}"
+
+    # Stage 4 stock
+    prices_down = [100] * 150 + list(range(100, 70, -1))
+    df_down = _make_df(prices_down)
+    sig_down = strategy.scan_watchlist("LOSER", df_down)
+    assert sig_down is None, f"Expected None for Stage 4 watchlist, got {sig_down}"
+
+    print("  ✅ test_weinstein_watchlist_scan passed")
 
 
 def test_weinstein_stage4():
@@ -161,8 +213,11 @@ if __name__ == "__main__":
     test_ma_stack_aligned()
     test_slope_is_rising()
     test_weinstein_stage2a()
+    test_weinstein_stage2a_hold()
+    test_weinstein_no_position_not_hold()
+    test_weinstein_watchlist_scan()
     test_weinstein_stage4()
     test_momentum_strong()
     test_momentum_negative()
     test_strategy_columns_and_rows()
-    print("\n  ✅ All tests passed!\n")
+    print(f"\n  ✅ All 16 tests passed!\n")

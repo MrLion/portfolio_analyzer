@@ -47,19 +47,41 @@ class MomentumStrategy(Strategy):
         else:
             score = None
 
+        # Momentum accelerating = short-term ROC stronger than medium-term
+        accelerating = (roc_20 is not None and roc_60 is not None and roc_20 > roc_60)
+
+        has_position = position is not None
+
         if score is None:
             action, severity = "—", "gray"
         elif score >= 70:
-            action, severity = "🟢 STRONG", "green"
+            if has_position:
+                action, severity = "🟢 HOLD", "green"
+            elif accelerating and current_rsi and current_rsi < 70:
+                action, severity = "🟢 BUY", "green"
+            else:
+                action, severity = "🟢 STRONG", "green"
+        elif score >= 55:
+            if not has_position and accelerating:
+                action, severity = "⚪ WATCH", "blue"
+            elif has_position:
+                action, severity = "🟢 HOLD", "green"
+            else:
+                action, severity = "🟡 MODERATE", "yellow"
         elif score >= 45:
-            action, severity = "🟡 MODERATE", "yellow"
+            if has_position:
+                action, severity = "🟡 CAUTION", "yellow"
+            elif accelerating:
+                action, severity = "⚪ WATCH", "blue"
+            else:
+                action, severity = "🟡 MODERATE", "yellow"
         elif score >= 25:
             action, severity = "🟠 WEAK", "orange"
         else:
             action, severity = "🔴 NEGATIVE", "red"
 
         label = f"Mom {score:.0f}" if score is not None else "N/A"
-        detail = self._build_detail(roc_20, roc_60, roc_125, current_rsi)
+        detail = self._build_detail(roc_20, roc_60, roc_125, current_rsi, accelerating)
 
         return Signal(
             ticker=ticker,
@@ -73,12 +95,15 @@ class MomentumStrategy(Strategy):
                 "roc_125d": roc_125,
                 "rsi_14": current_rsi,
                 "momentum_score": score,
+                "accelerating": accelerating,
             },
         )
 
     def scan_watchlist(self, ticker: str, df: pd.DataFrame) -> Signal | None:
         signal = self.analyze(ticker, df)
-        if signal.metrics.get("momentum_score") and signal.metrics["momentum_score"] >= 55:
+        if "BUY" in signal.action or "WATCH" in signal.action:
+            return signal
+        if signal.metrics.get("momentum_score") and signal.metrics["momentum_score"] >= 60:
             return signal
         return None
 
@@ -115,7 +140,7 @@ class MomentumStrategy(Strategy):
         normalized = 50 + (roc * 1.5)
         return max(0, min(100, normalized))
 
-    def _build_detail(self, roc_20, roc_60, roc_125, rsi) -> str:
+    def _build_detail(self, roc_20, roc_60, roc_125, rsi, accelerating=False) -> str:
         parts = []
         if roc_20 is not None:
             parts.append(f"20d: {roc_20:+.1f}%")
@@ -126,4 +151,6 @@ class MomentumStrategy(Strategy):
                 parts.append(f"RSI {rsi:.0f} (overbought)")
             elif rsi < 30:
                 parts.append(f"RSI {rsi:.0f} (oversold)")
+        if accelerating:
+            parts.append("⚡ accelerating")
         return " | ".join(parts) if parts else "Insufficient data"
